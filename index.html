@@ -403,30 +403,30 @@ function tryActivateGameButton(ev) {
 /* ---------- イベントバインド ---------- */
 function bindGameActionButton() {
     if (!gameActionBtn) return;
-    
+
+    let _touched = false;
+
+    // iOS最優先: touchstart で即発火・ghost click防止
     gameActionBtn.addEventListener('touchstart', e => {
+        e.preventDefault();
         e.stopPropagation();
-        suppressActionClick = true;
+        _touched = true;
         tryActivateGameButton(e);
-        setTimeout(() => { suppressActionClick = false; }, 480);
     }, { passive: false });
-    
+
+    // PC マウス用
     gameActionBtn.addEventListener('pointerdown', e => {
         if (e.pointerType === 'touch') return;
         if (e.pointerType === 'mouse' && e.button !== 0) return;
-        e.stopPropagation();
         tryActivateGameButton(e);
     });
-    
+
+    // click は touchstart 未処理時のみ（PC Safari等）
     gameActionBtn.addEventListener('click', e => {
-        if (suppressActionClick) {
-            e.preventDefault();
-            e.stopPropagation();
-            return;
-        }
+        if (_touched) { _touched = false; return; }
         tryActivateGameButton(e);
     });
-    
+
     gameActionBtn.addEventListener('keydown', e => {
         if (e.key !== 'Enter' && e.key !== ' ') return;
         e.preventDefault();
@@ -439,13 +439,7 @@ bindGameActionButton();
 document.addEventListener('pointerdown', unlockAudio, { once: true });
 document.addEventListener('keydown', unlockAudio, { once: true });
 
-/* iOS対策 */
-let lastDocTouchEnd = 0;
-document.addEventListener('touchend', e => {
-    const now = Date.now();
-    if (now - lastDocTouchEnd < 300 && e.cancelable) e.preventDefault();
-    lastDocTouchEnd = now;
-}, { passive: false });
+/* ダブルタップズーム防止（viewport user-scalable=no で代替済み） */
 
 window.addEventListener('touchmove', e => e.preventDefault(), { passive: false });
 window.addEventListener('resize', init);
