@@ -2,15 +2,27 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
     <title>桜沢新幹線駅 ストップチャレンジ — 電車でGO!超越版</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
+        *, *::before, *::after {
+            box-sizing: border-box;
+            -webkit-tap-highlight-color: transparent;
+            -webkit-touch-callout: none;
+        }
         html, body {
-            margin: 0; padding: 0; width: 100%; height: 100%;
+            margin: 0; padding: 0;
+            width: 100%; height: 100%;
+            height: -webkit-fill-available;
+            min-height: 100%;
             overflow: hidden; position: fixed; overscroll-behavior: none;
             background: #1a1a2e; font-family: 'Helvetica Neue', Arial, sans-serif;
             touch-action: manipulation;
+            -webkit-user-select: none;
+            user-select: none;
         }
         #gameCanvas {
             display: block; position: fixed; top: 0; left: 0;
@@ -20,7 +32,10 @@
             position: fixed; top: max(20px, env(safe-area-inset-top, 20px));
             left: 50%; transform: translateX(-50%); pointer-events: none;
             text-align: center; color: white; text-shadow: 2px 2px 8px rgba(0,0,0,0.9);
-            width: 90vw; z-index: 10;
+            width: min(90vw, calc(100vw - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px)));
+            padding-left: env(safe-area-inset-left, 0px);
+            padding-right: env(safe-area-inset-right, 0px);
+            z-index: 10;
         }
         #gameTitle {
             font-size: clamp(1rem, 4vw, 1.8rem); font-weight: 900; letter-spacing: 0.05em;
@@ -95,6 +110,28 @@
 
 <script>
 /* ============================================================
+   iOS Safari 対策: CanvasRenderingContext2D.roundRect ポリフィル
+   ============================================================ */
+if (!CanvasRenderingContext2D.prototype.roundRect) {
+    CanvasRenderingContext2D.prototype.roundRect = function(x, y, w, h, r) {
+        const radius = typeof r === 'number' ? r : (Array.isArray(r) ? r[0] : 0);
+        const rr = Math.min(Math.abs(radius), Math.abs(w) / 2, Math.abs(h) / 2);
+        this.beginPath();
+        this.moveTo(x + rr, y);
+        this.lineTo(x + w - rr, y);
+        this.arcTo(x + w, y, x + w, y + rr, rr);
+        this.lineTo(x + w, y + h - rr);
+        this.arcTo(x + w, y + h, x + w - rr, y + h, rr);
+        this.lineTo(x + rr, y + h);
+        this.arcTo(x, y + h, x, y + h - rr, rr);
+        this.lineTo(x, y + rr);
+        this.arcTo(x, y, x + rr, y, rr);
+        this.closePath();
+        return this;
+    };
+}
+
+/* ============================================================
    桜沢新幹線駅 ストップチャレンジ — 電車でGO!超越版
    ============================================================ */
 
@@ -121,6 +158,8 @@ let brakePressure = 0;
 let targetX = 0;
 let canvasW = 0;
 let canvasH = 0;
+/** @type {number} 描画バッファ用スケール（論理サイズとは別に保持） */
+let canvasBackingDpr = 1;
 let now = 0;
 let dramaticPulse = 0;
 let brakeStartX = null;
@@ -248,32 +287,40 @@ function muteTrainSynth() {
 }
 
 function updateTrainSynth() {
-    if (!trainSynth || trainSynth.ac.state !== 'running') return;
+    if (!trainSynth) return;
+    try {
+        if (trainSynth.ac.state !== 'running') {
+            trainSynth.ac.resume().catch(() => {});
+            return;
+        }
 
-    if (gameState === 'MOVING') {
-        const spNorm = Math.min(1.15, Math.max(0, (speed - 2) / 26));
-        const runVol = 0.11 + spNorm * 0.11;
-        trainSynth.motorGain.gain.value = runVol * 0.52;
-        trainSynth.whineGain.gain.value = runVol * 0.38;
-        trainSynth.noiseGain.gain.value = runVol * 0.42;
-        trainSynth.brakeOscGain.gain.value = 0;
-        trainSynth.brakeNG.gain.value = 0;
-        trainSynth.motorOsc.frequency.value = 56 + spNorm * 34;
-        trainSynth.whineOsc.frequency.value = 280 + spNorm * 520;
-        trainSynth.noiseBP.frequency.value = 360 + spNorm * 980;
-    } else if (gameState === 'BRAKING') {
-        const spdFact = Math.min(1, speed / 22);
-        const brk = brakePressure;
-        const runFade = Math.max(0, spdFact * (1 - brk * 0.92));
-        trainSynth.motorGain.gain.value = runFade * 0.1;
-        trainSynth.whineGain.gain.value = runFade * 0.065;
-        trainSynth.noiseGain.gain.value = runFade * 0.13 + brk * 0.055;
-        const squeal = Math.min(1, brk * 1.05) * Math.min(1, spdFact + 0.12);
-        trainSynth.brakeOscGain.gain.value = 0.048 + squeal * 0.17;
-        trainSynth.brakeNG.gain.value = 0.032 + squeal * 0.15;
-        trainSynth.brakeOsc.frequency.value = 300 - brk * 105 + spdFact * 52;
-        trainSynth.brakeNF.frequency.value = 1500 + brk * 1100 + spdFact * 220;
-    } else {
+        if (gameState === 'MOVING') {
+            const spNorm = Math.min(1.15, Math.max(0, (speed - 2) / 26));
+            const runVol = 0.11 + spNorm * 0.11;
+            trainSynth.motorGain.gain.value = runVol * 0.52;
+            trainSynth.whineGain.gain.value = runVol * 0.38;
+            trainSynth.noiseGain.gain.value = runVol * 0.42;
+            trainSynth.brakeOscGain.gain.value = 0;
+            trainSynth.brakeNG.gain.value = 0;
+            trainSynth.motorOsc.frequency.value = 56 + spNorm * 34;
+            trainSynth.whineOsc.frequency.value = 280 + spNorm * 520;
+            trainSynth.noiseBP.frequency.value = 360 + spNorm * 980;
+        } else if (gameState === 'BRAKING') {
+            const spdFact = Math.min(1, speed / 22);
+            const brk = brakePressure;
+            const runFade = Math.max(0, spdFact * (1 - brk * 0.92));
+            trainSynth.motorGain.gain.value = runFade * 0.1;
+            trainSynth.whineGain.gain.value = runFade * 0.065;
+            trainSynth.noiseGain.gain.value = runFade * 0.13 + brk * 0.055;
+            const squeal = Math.min(1, brk * 1.05) * Math.min(1, spdFact + 0.12);
+            trainSynth.brakeOscGain.gain.value = 0.048 + squeal * 0.17;
+            trainSynth.brakeNG.gain.value = 0.032 + squeal * 0.15;
+            trainSynth.brakeOsc.frequency.value = 300 - brk * 105 + spdFact * 52;
+            trainSynth.brakeNF.frequency.value = 1500 + brk * 1100 + spdFact * 220;
+        } else {
+            muteTrainSynth();
+        }
+    } catch (_) {
         muteTrainSynth();
     }
 }
@@ -301,10 +348,17 @@ const PASSENGERS = [
    初期化・ゲーム制御
    ============================================================ */
 function init() {
-    canvasW = window.innerWidth;
-    canvasH = window.innerHeight;
-    canvas.width = canvasW;
-    canvas.height = canvasH;
+    const W = window.innerWidth;
+    const H = window.innerHeight;
+    canvasW = W;
+    canvasH = H;
+    canvasBackingDpr = Math.min(window.devicePixelRatio || 1, 2.5);
+    canvas.width = Math.max(1, Math.floor(canvasW * canvasBackingDpr));
+    canvas.height = Math.max(1, Math.floor(canvasH * canvasBackingDpr));
+    canvas.style.width = canvasW + 'px';
+    canvas.style.height = canvasH + 'px';
+    ctx.setTransform(canvasBackingDpr, 0, 0, canvasBackingDpr, 0, 0);
+
     targetX = canvasW * 0.72;
     updateBestDisplay();
     resetGame();
@@ -312,7 +366,8 @@ function init() {
 
 function resetGame() {
     gameState = 'START';
-    trainX = -canvasW * 0.9;
+    const trainFullLength = getTrainNoseOffsetPx();
+    trainX = -trainFullLength - (canvasW * 0.1);
     speed = 0;
     brakePressure = 0;
     dramaticPulse = 0;
@@ -356,7 +411,6 @@ function handleInput() {
 
 /* ---------- デバウンス制御（状態別最適化） ---------- */
 let lastActionActivateAt = 0;
-let suppressActionClick = false;
 
 function getCurrentDebounceMs() {
     if (gameState === 'START') return 320;    // 誤発進防止
@@ -405,31 +459,35 @@ function tryActivateGameButton(ev) {
     syncActionButtonUI();
 }
 
-/* ---------- イベントバインド ---------- */
+/* ---------- イベントバインド（タッチ優先・pointer統一） ---------- */
 function bindGameActionButton() {
     if (!gameActionBtn) return;
 
-    let _touched = false;
+    let lastTouchStartAt = 0;
+    const DUP_GUARD_MS = 450;
 
-    // iOS最優先: touchstart で即発火・ghost click防止
-    gameActionBtn.addEventListener('touchstart', e => {
-        e.preventDefault();
+    const handleButtonAction = e => {
+        if ((e.type === 'mousedown' || e.pointerType === 'mouse') && e.button !== 0) return;
+        if (e.cancelable) e.preventDefault();
         e.stopPropagation();
-        _touched = true;
         tryActivateGameButton(e);
+    };
+
+    gameActionBtn.addEventListener('touchstart', e => {
+        lastTouchStartAt = performance.now();
+        handleButtonAction(e);
     }, { passive: false });
 
-    // PC マウス用
-    gameActionBtn.addEventListener('pointerdown', e => {
-        if (e.pointerType === 'touch') return;
-        if (e.pointerType === 'mouse' && e.button !== 0) return;
-        tryActivateGameButton(e);
+    gameActionBtn.addEventListener('mousedown', e => {
+        if (performance.now() - lastTouchStartAt < DUP_GUARD_MS) return;
+        handleButtonAction(e);
     });
 
-    // click は touchstart 未処理時のみ（PC Safari等）
-    gameActionBtn.addEventListener('click', e => {
-        if (_touched) { _touched = false; return; }
-        tryActivateGameButton(e);
+    gameActionBtn.addEventListener('pointerdown', e => {
+        if (e.pointerType === 'touch') return;
+        if (performance.now() - lastTouchStartAt < DUP_GUARD_MS) return;
+        try { gameActionBtn.setPointerCapture(e.pointerId); } catch (_) {}
+        handleButtonAction(e);
     });
 
     gameActionBtn.addEventListener('keydown', e => {
@@ -441,13 +499,33 @@ function bindGameActionButton() {
 
 bindGameActionButton();
 
-document.addEventListener('pointerdown', unlockAudio, { once: true });
-document.addEventListener('keydown', unlockAudio, { once: true });
+['pointerdown', 'touchstart', 'keydown'].forEach(evt => {
+    document.addEventListener(evt, unlockAudio, { once: true, passive: true });
+});
 
-/* ダブルタップズーム防止（viewport user-scalable=no で代替済み） */
+/* ダブルタップズーム／長押しメニュー防止 */
+(function bindMobileGestures() {
+    let lastDocTap = 0;
+    document.addEventListener('touchstart', ev => {
+        if (gameActionBtn && (ev.target === gameActionBtn || gameActionBtn.contains(ev.target))) return;
+        const t = Date.now();
+        if (t - lastDocTap < 320 && ev.cancelable) ev.preventDefault();
+        lastDocTap = t;
+    }, { passive: false, capture: true });
+    document.addEventListener('dblclick', ev => { if (ev.cancelable) ev.preventDefault(); });
+    document.addEventListener('contextmenu', ev => { if (ev.cancelable) ev.preventDefault(); });
+})();
 
-window.addEventListener('touchmove', e => e.preventDefault(), { passive: false });
+canvas.addEventListener('touchmove', e => e.preventDefault(), { passive: false });
 window.addEventListener('resize', init);
+window.addEventListener('orientationchange', () => requestAnimationFrame(init));
+if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', () => requestAnimationFrame(init));
+}
+
+document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') unlockAudio();
+});
 
 /* ============================================================
    HUD描画（運転台表示）
@@ -1311,7 +1389,7 @@ function calculateScore() {
     const streakBonus = successStreak >= 3 ? ` 🔥${successStreak}連続成功！` : '';
     
     statusEl.innerText = `${resultText}${streakBonus}\n③「もう一度挑戦」ボタン`;
-    scoreEl.className = `text-4xl font-bold ${colorClass}`;
+    scoreEl.className = `font-bold text-[clamp(1.35rem,6vw,2.35rem)] ${colorClass}`;
     scoreEl.innerText = `ズレ: ${(diff / 10).toFixed(1)}m${isNewBest ? ' 🆕ベスト更新！' : ''}`;
     
     updateBestDisplay();
@@ -1322,7 +1400,9 @@ function calculateScore() {
    メインループ
    ============================================================ */
 function update(timestamp) {
-    now = timestamp || performance.now();
+    now = (typeof timestamp === 'number' && timestamp > 0)
+        ? timestamp
+        : performance.now();
     
     if (gameState === 'MOVING') {
         trainX += speed;
@@ -1333,7 +1413,7 @@ function update(timestamp) {
             localStorage.setItem('sakurazawa_streak', 0);
             statusEl.innerText = 'オーバーラン！！🚨（失格）\n③「もう一度挑戦」ボタン';
             scoreEl.innerText = '失格';
-            scoreEl.className = 'text-4xl font-bold text-red-500';
+            scoreEl.className = 'font-bold text-[clamp(1.35rem,6vw,2.35rem)] text-red-500';
             muteTrainSynth();
             updateBestDisplay();
             syncActionButtonUI();
